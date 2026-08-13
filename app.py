@@ -196,82 +196,26 @@ def news_worker():
 
 def telegram_worker():
 
-    print("Telegram worker started.")
+   print("BOT TOKEN exists:", bool(BOT_TOKEN))
+print("CHAT ID exists:", bool(CHAT_ID))
+print("GROQ KEY exists:", bool(GROQ_API_KEY))
 
-    offset = 0
+try:
+    webhook = requests.get(
+        f"{TELEGRAM_URL}/getWebhookInfo",
+        timeout=20
+    )
+    print("Webhook Info:", webhook.text)
 
-    while True:
+    delete = requests.get(
+        f"{TELEGRAM_URL}/deleteWebhook",
+        params={"drop_pending_updates": True},
+        timeout=20
+    )
+    print("Delete Webhook:", delete.text)
 
-        try:
-
-            response = requests.get(
-                f"{TELEGRAM_URL}/getUpdates",
-                params={
-                    "offset": offset,
-                    "timeout": 30
-                },
-                timeout=40
-            )
-
-            data = response.json()
-
-            if not data.get("ok"):
-                time.sleep(5)
-                continue
-
-            for update in data.get("result", []):
-
-                offset = update["update_id"] + 1
-
-                message = update.get("message")
-
-                if not message:
-                    continue
-
-                text = message.get("text", "")
-                chat_id = message["chat"]["id"]
-
-                if not text:
-                    continue
-
-                print("Message received:", text)
-
-                if text == "/start":
-
-                    reply = (
-                        "🤖 Hello!\n\n"
-                        "मैं आपका AI News Bot हूँ.\n"
-                        "आप मुझसे कुछ भी पूछ सकते हैं."
-                    )
-
-                else:
-
-                    reply = ask_groq(
-                        f"""
-You are a helpful Telegram AI assistant.
-
-Reply to the user's message naturally.
-Use simple Hindi/Hinglish when appropriate.
-
-User message:
-{text}
-"""
-                    )
-
-                requests.post(
-                    f"{TELEGRAM_URL}/sendMessage",
-                    json={
-                        "chat_id": chat_id,
-                        "text": reply
-                    },
-                    timeout=30
-                )
-
-        except Exception as e:
-
-            print("Telegram Worker Error:", e)
-
-            time.sleep(5)
+except Exception as e:
+    print("Telegram setup error:", e)
 
 
 # =========================
