@@ -214,6 +214,8 @@ def get_latest_news():
 
 def send_news(chat_id, news):
 
+    global pending_article
+
     if not news:
         send_telegram(
             chat_id,
@@ -231,26 +233,35 @@ def send_news(chat_id, news):
         news["summary"]
     )
 
+    # Save article for approval/edit
+    pending_article = {
+        "title": news["title"],
+        "link": news["link"],
+        "article": article
+    }
+
     message = (
-        "📰 AI NEWS\n\n"
+        "📰 AI NEWS - REVIEW\n\n"
         f"{article}\n\n"
         f"🔗 Source: {news['link']}"
     )
 
-    # Telegram message limit से बचने के लिए
     if len(message) > 4000:
         message = message[:3950] + "\n\n🔗 Source: " + news["link"]
 
     buttons = [
         [
+            {"text": "🟢 APPROVE", "callback_data": "approve"},
+            {"text": "🔴 REJECT", "callback_data": "reject"}
+        ],
+        [
+            {"text": "✏️ EDIT / IMPROVE", "callback_data": "edit"}
+        ],
+        [
             {
                 "text": "🔗 Read Original",
                 "url": news["link"]
             }
-        ],
-        [
-            {"text": "📰 Latest News", "callback_data": "latest"},
-            {"text": "🤖 Ask AI", "callback_data": "ask"}
         ]
     ]
 
@@ -266,6 +277,13 @@ def send_news(chat_id, news):
 # =========================
 
 last_news_link = None
+
+# =========================
+# Pending Article
+# =========================
+
+pending_article = None
+awaiting_edit = False
 
 
 def news_worker():
@@ -360,8 +378,67 @@ def telegram_worker():
                         },
                         timeout=20
                     )
+                                         if action == "approve":
 
+                        global pending_article
+
+                        if pending_article:
+
+                            send_telegram(
+                                chat_id,
+                                "✅ Article APPROVED!\n\n"
+                                "यह article publish करने के लिए ready है."
+                            )
+
+                            pending_article = None
+
+                        else:
+
+                            send_telegram(
+                                chat_id,
+                                "⚠️ कोई pending article नहीं है."
+                            )
+
+
+                    elif action == "reject":
+
+                        pending_article = None
+
+                        send_telegram(
+                            chat_id,
+                            "❌ Article REJECTED.\n\n"
+                            "यह article आगे इस्तेमाल नहीं किया जाएगा."
+                        )
+
+
+                    elif action == "edit":
+
+                        global awaiting_edit
+
+                        if pending_article:
+
+                            awaiting_edit = True
+
+                            send_telegram(
+                                chat_id,
+                                "✏️ बताइए article में क्या बदलना है.\n\n"
+                                "Example:\n"
+                                "Introduction ज्यादा powerful करो.\n\n"
+                                "या:\n"
+                                "Article को ज्यादा practical बनाओ."
+                            )
+
+                        else:
+
+                            send_telegram(
+                                chat_id,
+                                "⚠️ Edit करने के लिए कोई pending article नहीं है."
+                            )
+
+
+                    elif action == "latest":
                     if action == "latest":
+                        
 
                         news = get_latest_news()
                         send_news(chat_id, news)
@@ -420,8 +497,80 @@ def telegram_worker():
 
                 if not text:
                     continue
-
+                
                 print("Message received:", text)
+                                # =====================
+                # Article Edit Request
+                # =====================
+
+                if awaiting_edit and pending_article:
+
+                    old_article = pending_article["article"]
+
+                    edit_prompt = f"""
+You are editing an AI technology news article.
+
+Original article:
+{old_article}
+
+User's requested changes:
+{text}
+
+Rewrite the article according to the user's request.
+
+Rules:
+- Keep the facts accurate.
+- Do not invent information.
+- Keep it natural Hindi.
+- Keep useful technical English terms.
+- Improve the article instead of simply shortening it.
+- Do not mention AI or this editing process.
+"""
+
+                    edited_article = ask_groq(edit_prompt)
+
+                    pending_article["article"] = edited_article
+
+                    awaiting_edit = False
+
+                    message = (
+                        "✏️ UPDATED ARTICLE - REVIEW\n\n"
+                        f"{edited_article}\n\n"
+                        f"🔗 Source: {pending_article['link']}"
+                    )
+
+                    if len(message) > 4000:
+                        message = message[:3950] + (
+                            "\n\n🔗 Source: "
+                            + pending_article["link"]
+                        )
+
+                    buttons = [
+                        [
+                            {
+                                "text": "🟢 APPROVE",
+                                "callback_data": "approve"
+                            },
+                            {
+                                "text": "🔴 REJECT",
+                                "callback_data": "reject"
+                            }
+                        ],
+                        [
+                            {
+                                "text": "✏️ EDIT / IMPROVE",
+                                "callback_data": "edit"
+                            }
+                        ]
+                    ]
+
+                    send_telegram(
+                        chat_id,
+                        message,
+                        buttons
+                    )
+
+                    continue
 
                 # /start
                 if text == "/start":
