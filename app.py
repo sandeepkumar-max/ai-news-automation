@@ -378,7 +378,7 @@ def telegram_worker():
                         },
                         timeout=20
                     )
-                                         if action == "approve":
+                    if action == "approve":
 
                         global pending_article
 
