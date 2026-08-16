@@ -3,6 +3,7 @@ import time
 import threading
 import requests
 import feedparser
+from datetime import datetime, timedelta
 
 from flask import Flask
 
@@ -145,40 +146,141 @@ def ask_groq(prompt):
         return "AI service में अभी problem है."
 
 
+def ask_groq_compound(prompt):
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    data = {
+        "model": "groq/compound",
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0.65,
+        "max_tokens": 3000,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web for information."
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "visit_website",
+                    "description": "Visit a website URL to read its content."
+                }
+            }
+        ]
+    }
+
+    try:
+        response = requests.post(
+            GROQ_URL,
+            headers=headers,
+            json=data,
+            timeout=120
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
+
+        print("Groq Compound Error:", response.status_code)
+        print(response.text)
+        return None
+
+    except Exception as e:
+        print("Groq Compound Exception:", e)
+        return None
+
+
 # =========================
 # Create News Article
 # =========================
 
-def create_article(title, summary):
+def create_article(title, summary, link):
+    print("Starting Compound AI Research...")
 
-    prompt = f"""
-You are an AI technology news writer.
+    research_prompt = f"""
+You are an expert AI technology researcher and news writer.
 
-Write a natural Hindi news article based ONLY on the information provided.
+News Title: {title}
+Original Link: {link}
+Summary: {summary}
 
-News Title:
-{title}
+Task:
+1. Use the 'visit_website' tool to read the full content of the Original Link.
+2. If necessary, use the 'web_search' tool to cross-check important facts or gather relevant context.
+3. Extract verified facts and remove unsupported claims.
+4. Write a high-value, completely original Hindi news article.
 
-News Summary:
-{summary}
-
-Rules:
-
-- Write in simple natural Hindi.
-- Around 500-700 words.
-- Start with an interesting introduction.
-- Explain the news clearly.
-- Add useful context only when supported.
-- Do not make up facts.
-- Keep important technical English terms.
-- Use short paragraphs.
-- Add a natural conclusion.
-- Do not mention that AI wrote the article.
-
-Now write the article.
+Rules for the Article:
+- Provide a strong factual title and an interesting hook.
+- Use simple, natural Hindi with appropriate technical English terms.
+- Separate verified facts from analysis. Explain real-world impact clearly.
+- Provide practical reader value.
+- Use short readable paragraphs.
+- Avoid repetitive generic openings like "आज के समय में..." or "हाल ही में...".
+- Do NOT invent stats, dates, prices, or quotes.
+- Do not mention that AI wrote the article or describe your research process. Output only the final article.
 """
 
-    return ask_groq(prompt)
+    article = ask_groq_compound(research_prompt)
+
+    # Fallback if Compound API fails
+    if not article:
+        print("Falling back to standard ask_groq due to Compound API failure...")
+        fallback_prompt = f"""
+You are an expert AI technology news writer.
+Write a high-value, completely original Hindi news article based on this summary.
+
+News Title: {title}
+Summary: {summary}
+
+Rules:
+1. Write an original article. Do NOT just translate or summarize.
+2. Provide a strong factual title and an interesting hook.
+3. Use simple, natural Hindi with appropriate technical English terms.
+4. Separate facts from analysis. Ensure clear explanation of real-world impact.
+5. Provide practical reader value.
+6. Short readable paragraphs.
+7. Avoid repetitive generic openings like "आज के समय में..." or "हाल ही में...".
+8. Do NOT invent stats, dates, or quotes.
+9. Do not mention that AI wrote the article.
+"""
+        article = ask_groq(fallback_prompt)
+
+    return article
+
+def evaluate_and_improve_article(article, title):
+    evaluate_prompt = f"""
+You are a strict Senior Editor. Review the following Hindi news article.
+
+Article:
+{article}
+
+Evaluate it against these criteria:
+- Is it just a translation or summary? (It should be original)
+- Is the information supported and useful?
+- Is the writing natural human-like Hindi without generic/robotic openings?
+- Does it have practical reader value?
+
+If it passes all criteria and is excellent, output ONLY the exact word: PASS
+
+If it is poor, repetitive, or sounds like an AI translation, REWRITE the entire article to be excellent and output ONLY the rewritten article.
+"""
+    print("Evaluating and improving article...")
+    result = ask_groq(evaluate_prompt)
+    if result.strip().upper() == "PASS":
+        return article
+    return result
 
 
 # =========================
@@ -230,8 +332,11 @@ def send_news(chat_id, news):
 
     article = create_article(
         news["title"],
-        news["summary"]
+        news["summary"],
+        news["link"]
     )
+
+    article = evaluate_and_improve_article(article, news["title"])
 
     # Save article for approval/edit
     pending_article = {
@@ -286,6 +391,22 @@ pending_article = None
 awaiting_edit = False
 
 
+def get_seconds_until_next_schedule():
+    now = datetime.utcnow()
+    # Target 1: 02:30 UTC (08:00 AM IST)
+    target1 = now.replace(hour=2, minute=30, second=0, microsecond=0)
+    # Target 2: 12:30 UTC (06:00 PM IST)
+    target2 = now.replace(hour=12, minute=30, second=0, microsecond=0)
+
+    if now < target1:
+        next_target = target1
+    elif now < target2:
+        next_target = target2
+    else:
+        next_target = target1 + timedelta(days=1)
+
+    return (next_target - now).total_seconds()
+
 def news_worker():
 
     global last_news_link
@@ -293,6 +414,10 @@ def news_worker():
     print("News worker started.")
 
     while True:
+
+        wait_seconds = get_seconds_until_next_schedule()
+        print(f"News worker sleeping for {wait_seconds} seconds until next scheduled time...")
+        time.sleep(wait_seconds)
 
         try:
 
@@ -317,9 +442,6 @@ def news_worker():
         except Exception as e:
 
             print("News Worker Error:", e)
-
-        # Check every 30 minutes
-        time.sleep(1800)
 
 
 # =========================
@@ -437,8 +559,6 @@ def telegram_worker():
 
 
                     elif action == "latest":
-                    if action == "latest":
-                        
 
                         news = get_latest_news()
                         send_news(chat_id, news)
@@ -497,7 +617,7 @@ def telegram_worker():
 
                 if not text:
                     continue
-                
+
                 print("Message received:", text)
                                 # =====================
                 # Article Edit Request
