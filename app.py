@@ -108,6 +108,663 @@ def ask_groq(prompt):
     }
 
     data = {
+        "model": "openai/gpt-oss-120b",
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0.65,
+        "max_tokens": 1300
+    }
+
+    try:
+
+        response = requests.post(
+            GROQ_URL,
+            headers=headers,
+            json=data,
+            timeout=60
+        )
+
+        if response.status_code == 200:
+
+            result = response.json()
+
+            return result["choices"][0]["message"]["content"]
+
+        print("Groq Error:", response.status_code)
+        print(response.text)
+
+        return "AI से response नहीं मिला। थोड़ी देर बाद फिर कोशिश करें."
+
+    except Exception as e:
+
+        print("Groq Exception:", e)
+
+        return "AI service में अभी problem है."
+
+
+def ask_groq_compound(prompt):
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    data = {
+        "model": "groq/compound",
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0.65,
+        "max_tokens": 3000,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web for information."
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "visit_website",
+                    "description": "Visit a website URL to read its content."
+                }
+            }
+        ]
+    }
+
+    try:
+        response = requests.post(
+            GROQ_URL,
+            headers=headers,
+            json=data,
+            timeout=120
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
+
+        print("Groq Compound Error:", response.status_code)
+        print(response.text)
+        return None
+
+    except Exception as e:
+        print("Groq Compound Exception:", e)
+        return None
+
+
+# =========================
+# Create News Article
+# =========================
+
+def create_article(title, summary, link):
+    print("Starting Compound AI Research...")
+
+    research_prompt = f"""
+You are an expert AI technology researcher and news writer.
+
+News Title: {title}
+Original Link: {link}
+Summary: {summary}
+
+Task:
+1. Use the 'visit_website' tool to read the full content of the Original Link.
+2. If necessary, use the 'web_search' tool to cross-check important facts or gather relevant context.
+3. Extract verified facts and remove unsupported claims.
+4. Write a high-value, completely original Hindi news article.
+
+Rules for the Article:
+- Provide a strong factual title and an interesting hook.
+- Use simple, natural Hindi with appropriate technical English terms.
+- Separate verified facts from analysis. Explain real-world impact clearly.
+- Provide practical reader value.
+- Use short readable paragraphs.
+- Avoid repetitive generic openings like "आज के समय में..." or "हाल ही में...".
+- Do NOT invent stats, dates, prices, or quotes.
+- Do not mention that AI wrote the article or describe your research process. Output only the final article.
+"""
+
+    article = ask_groq_compound(research_prompt)
+
+    # Fallback if Compound API fails
+    if not article:
+        print("Falling back to standard ask_groq due to Compound API failure...")
+        fallback_prompt = f"""
+You are an expert AI technology news writer.
+Write a high-value, completely original Hindi news article based on this summary.
+
+News Title: {title}
+Summary: {summary}
+
+Rules:
+1. Write an original article. Do NOT just translate or summarize.
+2. Provide a strong factual title and an interesting hook.
+3. Use simple, natural Hindi with appropriate technical English terms.
+4. Separate facts from analysis. Ensure clear explanation of real-world impact.
+5. Provide practical reader value.
+6. Short readable paragraphs.
+7. Avoid repetitive generic openings like "आज के समय में..." or "हाल ही में...".
+8. Do NOT invent stats, dates, or quotes.
+9. Do not mention that AI wrote the article.
+"""
+        article = ask_groq(fallback_prompt)
+
+    return article
+
+def evaluate_and_improve_article(article, title):
+    evaluate_prompt = f"""
+You are a strict Senior Editor. Review the following Hindi news article.
+
+Article:
+{article}
+
+Evaluate it against these criteria:
+- Is it just a translation or summary? (It should be original)
+- Is the information supported and useful?
+- Is the writing natural human-like Hindi without generic/robotic openings?
+- Does it have practical reader value?
+
+If it passes all criteria and is excellent, output ONLY the exact word: PASS
+
+If it is poor, repetitive, or sounds like an AI translation, REWRITE the entire article to be excellent and output ONLY the rewritten article.
+"""
+    print("Evaluating and improving article...")
+    result = ask_groq(evaluate_prompt)
+    if result.strip().upper() == "PASS":
+        return article
+    return result
+
+
+# =========================
+# Get Latest News
+# =========================
+
+def get_latest_news():
+
+    try:
+
+        feed = feedparser.parse(RSS_URL)
+
+        if not feed.entries:
+            return None
+
+        entry = feed.entries[0]
+
+        return {
+            "title": entry.get("title", "No title"),
+            "link": entry.get("link", ""),
+            "summary": entry.get("summary", "")[:1500]
+        }
+
+    except Exception as e:
+
+        print("RSS Error:", e)
+        return None
+
+
+# =========================
+# Send News
+# =========================
+
+def send_news(chat_id, news):
+
+    global pending_article
+
+    if not news:
+        send_telegram(
+            chat_id,
+            "❌ अभी news नहीं मिल पाई।"
+        )
+        return
+
+    send_telegram(
+        chat_id,
+        "⏳ News मिल गई!\n\nAI article तैयार कर रहा हूँ..."
+    )
+
+    article = create_article(
+        news["title"],
+        news["summary"],
+        news["link"]
+    )
+
+    article = evaluate_and_improve_article(article, news["title"])
+
+    # Save article for approval/edit
+    pending_article = {
+        "title": news["title"],
+        "link": news["link"],
+        "article": article
+    }
+
+    message = (
+        "📰 AI NEWS - REVIEW\n\n"
+        f"{article}\n\n"
+        f"🔗 Source: {news['link']}"
+    )
+
+    if len(message) > 4000:
+        message = message[:3950] + "\n\n🔗 Source: " + news["link"]
+
+    buttons = [
+        [
+            {"text": "🟢 APPROVE", "callback_data": "approve"},
+            {"text": "🔴 REJECT", "callback_data": "reject"}
+        ],
+        [
+            {"text": "✏️ EDIT / IMPROVE", "callback_data": "edit"}
+        ],
+        [
+            {
+                "text": "🔗 Read Original",
+                "url": news["link"]
+            }
+        ]
+    ]
+
+    send_telegram(
+        chat_id,
+        message,
+        buttons
+    )
+
+
+# =========================
+# Automatic News Worker
+# =========================
+
+last_news_link = None
+
+# =========================
+# Pending Article
+# =========================
+
+pending_article = None
+awaiting_edit = False
+
+
+def get_seconds_until_next_schedule():
+    now = datetime.utcnow()
+    # Target 1: 02:30 UTC (08:00 AM IST)
+    target1 = now.replace(hour=2, minute=30, second=0, microsecond=0)
+    # Target 2: 12:30 UTC (06:00 PM IST)
+    target2 = now.replace(hour=12, minute=30, second=0, microsecond=0)
+
+    if now < target1:
+        next_target = target1
+    elif now < target2:
+        next_target = target2
+    else:
+        next_target = target1 + timedelta(days=1)
+
+    return (next_target - now).total_seconds()
+
+def news_worker():
+
+    global last_news_link
+
+    print("News worker started.")
+
+    while True:
+
+        wait_seconds = get_seconds_until_next_schedule()
+        print(f"News worker sleeping for {wait_seconds} seconds until next scheduled time...")
+        time.sleep(wait_seconds)
+
+        try:
+
+            news = get_latest_news()
+
+            if news:
+
+                link = news["link"]
+
+                if link and link != last_news_link:
+
+                    print("New article found:", news["title"])
+
+                    send_news(CHAT_ID, news)
+
+                    last_news_link = link
+
+                else:
+
+                    print("No new news.")
+
+        except Exception as e:
+
+            print("News Worker Error:", e)
+
+
+# =========================
+# Telegram Worker
+# =========================
+
+def telegram_worker():
+
+    print("Telegram worker started.")
+
+    offset = 0
+
+    while True:
+
+        try:
+
+            response = requests.get(
+                f"{TELEGRAM_URL}/getUpdates",
+                params={
+                    "offset": offset,
+                    "timeout": 30
+                },
+                timeout=40
+            )
+
+            data = response.json()
+
+            if not data.get("ok"):
+
+                print("Telegram getUpdates error:", data)
+
+                time.sleep(5)
+                continue
+
+            for update in data.get("result", []):
+
+                offset = update["update_id"] + 1
+
+                # =====================
+                # Button Click
+                # =====================
+
+                callback = update.get("callback_query")
+
+                if callback:
+
+                    callback_id = callback["id"]
+                    chat_id = callback["message"]["chat"]["id"]
+                    action = callback.get("data")
+
+                    # Remove loading animation
+                    requests.post(
+                        f"{TELEGRAM_URL}/answerCallbackQuery",
+                        json={
+                            "callback_query_id": callback_id
+                        },
+                        timeout=20
+                    )
+                    if action == "approve":
+
+                        global pending_article
+
+                        if pending_article:
+
+                            send_telegram(
+                                chat_id,
+                                "✅ Article APPROVED!\n\n"
+                                "यह article publish करने के लिए ready है."
+                            )
+
+                            pending_article = None
+
+                        else:
+
+                            send_telegram(
+                                chat_id,
+                                "⚠️ कोई pending article नहीं है."
+                            )
+
+
+                    elif action == "reject":
+
+                        pending_article = None
+
+                        send_telegram(
+                            chat_id,
+                            "❌ Article REJECTED.\n\n"
+                            "यह article आगे इस्तेमाल नहीं किया जाएगा."
+                        )
+
+
+                    elif action == "edit":
+
+                        global awaiting_edit
+
+                        if pending_article:
+
+                            awaiting_edit = True
+
+                            send_telegram(
+                                chat_id,
+                                "✏️ बताइए article में क्या बदलना है.\n\n"
+                                "Example:\n"
+                                "Introduction ज्यादा powerful करो.\n\n"
+                                "या:\n"
+                                "Article को ज्यादा practical बनाओ."
+                            )
+
+                        else:
+
+                            send_telegram(
+                                chat_id,
+                                "⚠️ Edit करने के लिए कोई pending article नहीं है."
+                            )
+
+
+                    elif action == "latest":
+
+                        news = get_latest_news()
+                        send_news(chat_id, news)
+
+                    elif action == "check":
+
+                        send_telegram(
+                            chat_id,
+                            "🔍 Latest news check कर रहा हूँ..."
+                        )
+
+                        news = get_latest_news()
+
+                        if news:
+                            send_news(chat_id, news)
+                        else:
+                            send_telegram(
+                                chat_id,
+                                "❌ अभी news नहीं मिली."
+                            )
+
+                    elif action == "ask":
+
+                        send_telegram(
+                            chat_id,
+                            "🤖 अपना सवाल लिखकर भेजिए.\n\n"
+                            "Example:\n"
+                            "AI क्या है?"
+                        )
+
+                    elif action == "help":
+
+                        send_telegram(
+                            chat_id,
+                            "ℹ️ AI News Bot Help\n\n"
+                            "📰 Latest News = latest AI news\n"
+                            "🔄 Check News = अभी news check करें\n"
+                            "🤖 Ask AI = AI से सवाल पूछें\n"
+                            "ℹ️ Help = यह menu\n\n"
+                            "आप सीधे कोई भी सवाल भी भेज सकते हैं."
+                        )
+
+                    continue
+
+                # =====================
+                # Normal Message
+                # =====================
+
+                message = update.get("message")
+
+                if not message:
+                    continue
+
+                text = message.get("text", "")
+                chat_id = message["chat"]["id"]
+
+                if not text:
+                    continue
+
+                print("Message received:", text)
+                                # =====================
+                # Article Edit Request
+                # =====================
+
+                if awaiting_edit and pending_article:
+
+                    old_article = pending_article["article"]
+
+                    edit_prompt = f"""
+You are editing an AI technology news article.
+
+Original article:
+{old_article}
+
+User's requested changes:
+{text}
+
+Rewrite the article according to the user's request.
+
+Rules:
+- Keep the facts accurate.
+- Do not invent information.
+- Keep it natural Hindi.
+- Keep useful technical English terms.
+- Improve the article instead of simply shortening it.
+- Do not mention AI or this editing process.
+"""
+
+                    edited_article = ask_groq(edit_prompt)
+
+                    pending_article["article"] = edited_article
+
+                    awaiting_edit = False
+
+                    message = (
+                        "✏️ UPDATED ARTICLE - REVIEW\n\n"
+                        f"{edited_article}\n\n"
+                        f"🔗 Source: {pending_article['link']}"
+                    )
+
+                    if len(message) > 4000:
+                        message = message[:3950] + (
+                            "\n\n🔗 Source: "
+                            + pending_article["link"]
+                        )
+
+                    buttons = [
+                        [
+                            {
+                                "text": "🟢 APPROVE",
+                                "callback_data": "approve"
+                            },
+                            {
+                                "text": "🔴 REJECT",
+                                "callback_data": "reject"
+                            }
+                        ],
+                        [
+                            {
+                                "text": "✏️ EDIT / IMPROVE",
+                                "callback_data": "edit"
+                            }
+                        ]
+                    ]
+
+                    send_telegram(
+                        chat_id,
+                        message,
+                        buttons
+                    )
+
+                    continue
+
+                # /start
+                if text == "/start":
+
+                    main_menu(chat_id)
+
+                # Normal user question
+                else:
+
+                    reply = ask_groq(
+                        f"""
+You are a helpful Telegram AI assistant.
+
+Reply naturally and clearly.
+
+Use simple Hindi/Hinglish when appropriate.
+
+User message:
+{text}
+"""
+                    )
+
+                    send_telegram(
+                        chat_id,
+                        reply,
+                        [
+                            [
+                                {"text": "📰 Latest News", "callback_data": "latest"},
+                                {"text": "🤖 Ask AI", "callback_data": "ask"}
+                            ],
+                            [
+                                {"text": "🔄 Check News", "callback_data": "check"},
+                                {"text": "ℹ️ Help", "callback_data": "help"}
+                            ]
+                        ]
+                    )
+
+        except Exception as e:
+
+            print("Telegram Worker Error:", e)
+
+            time.sleep(5)
+
+
+# =========================
+# Start Workers
+# =========================
+
+threading.Thread(
+    target=telegram_worker,
+    daemon=True
+).start()
+
+threading.Thread(
+    target=news_worker,
+    daemon=True
+).start()
+
+
+# =========================
+# Start Flask
+# =========================
+
+if __name__ == "__main__":
+
+    port = int(
+        os.environ.get("PORT", 10000)
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+      )
+    data = {
         "model": "llama-3.3-70b-versatile",
         "messages": [
             {
